@@ -1,5 +1,19 @@
-
 // functions/[[path]].js
+
+// Helper function to parse cookies from the request headers
+function getCookie(request, name) {
+  const cookieHeader = request.headers.get('Cookie');
+  if (cookieHeader) {
+    const cookies = cookieHeader.split(';');
+    for (let cookie of cookies) {
+      const [key, value] = cookie.trim().split('=');
+      if (key === name) {
+        return value;
+      }
+    }
+  }
+  return null;
+}
 
 export async function onRequest(context) {
   const { request, env, params, next } = context;
@@ -15,54 +29,50 @@ export async function onRequest(context) {
 
   let targetHost;
   let targetPath = originalPath;
+  let isMainPageRequest = false;
 
   // 2. 智能判断目标 Host
-  // Heuristic: If the first path segment looks like a hostname (contains a dot), treat it as the target host.
-  // This handles initial requests like /www.google.com/search.
   if (pathSegments[0] && pathSegments[0].includes('.')) {
+    // Case 1: Initial request like /www.google.com/search
     targetHost = pathSegments[0];
     targetPath = pathSegments.slice(1).join('/');
+    isMainPageRequest = true; // This is a main request, so we should set the cookie
   } else {
-    // This is likely a relative path asset request (e.g., /assets/style.css).
-    // We need to infer the host from the Referer header.
+    // Case 2: Relative path asset request like /assets/style.css
+    // Strategy: Try Referer first, then fall back to Cookie.
     const referer = request.headers.get('Referer');
     if (referer) {
       try {
         const refererUrl = new URL(referer);
-        const refererPathSegments = refererUrl.pathname.split('/').filter(Boolean);
-        
-        // Find the first segment in the referer's path that looks like a hostname.
-        const hostFromReferer = refererPathSegments.find(segment => segment.includes('.'));
-
+        const hostFromReferer = refererUrl.pathname.split('/').find(s => s.includes('.'));
         if (hostFromReferer) {
           targetHost = hostFromReferer;
-          // The original path is the full path for the asset.
-          targetPath = originalPath;
         }
-      } catch (e) {
-        // Invalid Referer URL, proceed with caution.
+      } catch (e) { /* Invalid Referer */ }
+    }
+
+    // If Referer didn't work, try the cookie
+    if (!targetHost) {
+      const hostFromCookie = getCookie(request, 'original_host');
+      if (hostFromCookie) {
+        targetHost = hostFromCookie;
       }
     }
   }
 
-  // If we couldn't determine a host, we can't proceed.
   if (!targetHost) {
-    return new Response('Could not determine target host.', { status: 400 });
+    return new Response('Could not determine target host from path, referer, or cookie.', { status: 400 });
   }
 
-  // Reconstruct the final target URL
-  // Note: We ensure there's exactly one slash between host and path.
   const url = `https://${targetHost}/${targetPath}`.replace(/([^:]\/)\/+/g, "$1") + search;
 
   // 3. 构造请求头
   const newHeaders = new Headers(request.headers);
   newHeaders.forEach((value, key) => {
-    if (key.startsWith('cf-')) {
-      newHeaders.delete(key);
-    }
+    if (key.startsWith('cf-')) newHeaders.delete(key);
   });
   newHeaders.set('Host', targetHost);
-  newHeaders.set('Referer', `https://${targetHost}/`); // Set a generic referer
+  newHeaders.set('Referer', `https://${targetHost}/`);
 
   // 4. 创建请求
   const newRequest = new Request(url, {
@@ -72,18 +82,23 @@ export async function onRequest(context) {
     redirect: 'follow',
   });
 
-  // 5. 发起请求并获取响应
+  // 5. 发起请求
   const response = await fetch(newRequest);
-
-  // 6. 修改响应头
   const responseHeaders = new Headers(response.headers);
+
+  // 6. 修改响应头 (CORS)
   responseHeaders.set('Access-Control-Allow-Origin', '*');
   responseHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  responseHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  responseHeaders.set('Access-Control-Allow-Headers', '*');
   responseHeaders.delete('Content-Security-Policy');
   responseHeaders.delete('X-Frame-Options');
 
-  // 7. 返回最终响应
+  // 7. 如果是主页面请求, 设置 host cookie
+  if (isMainPageRequest) {
+    responseHeaders.append('Set-Cookie', `original_host=${targetHost}; Path=/; SameSite=Lax; Secure`);
+  }
+
+  // 8. 返回最终响应
   return new Response(response.body, {
     status: response.status,
     statusText: response.statusText,
