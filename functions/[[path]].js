@@ -3,8 +3,14 @@
 
 // 定义异步函数 onRequest，用于处理所有进入此路径的请求
 export async function onRequest(context) {
-  // 从上下文中解构 request, env, 和 params
-  const { request, env, params } = context;
+  // 从上下文中解构 request, env, params, 和 next
+  const { request, env, params, next } = context;
+
+  // 如果路径参数数组为空, 说明是访问根目录
+  // 调用 next() 将请求传递给静态资源处理器, 以便渲染 index.html
+  if (params.path.length === 0) {
+    return next();
+  }
 
   // 获取 URL 路径参数，并用 "/" 连接成字符串
   // 例如, /google.com/search -> ["google.com", "search"] -> "google.com/search"
