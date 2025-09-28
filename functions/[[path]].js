@@ -25,6 +25,14 @@ export async function onRequest(context) {
 
   // 创建一个新的 Headers 对象，复制原始请求的 headers
   const newHeaders = new Headers(request.headers);
+
+  // 移除所有 Cloudflare 特定的请求头，减少被目标网站识别为代理的几率
+  newHeaders.forEach((value, key) => {
+    if (key.startsWith('cf-')) {
+      newHeaders.delete(key);
+    }
+  });
+
   // 设置 Host 为目标 URL 的主机名
   newHeaders.set('Host', new URL(url).hostname);
   // 设置 Referer 为目标 URL
