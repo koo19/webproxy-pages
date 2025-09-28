@@ -36,7 +36,7 @@ export async function onRequest(context) {
     method: request.method,
     headers: newHeaders,
     body: request.body,
-    redirect: 'manual', // 手动处理重定向，防止 fetch 自动跟随
+    redirect: 'follow', // 自动跟随重定向
   });
 
   // 等待 fetch 请求完成
