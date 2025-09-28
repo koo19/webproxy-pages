@@ -1,37 +1,75 @@
+
 // functions/[[path]].js
 
 export async function onRequest(context) {
   const { request, env, params, next } = context;
 
-  // 1. 根路径处理：如果路径为空，则交由静态页面处理器显示 index.html
+  // 1. 根路径处理
   if (!params.path || params.path.length === 0) {
     return next();
   }
 
-  // 2. 拼接目标URL
-  const path = params.path.join('/');
+  const pathSegments = params.path;
+  const originalPath = params.path.join('/');
   const search = new URL(request.url).search;
-  const url = `https://${path}${search}`;
+
+  let targetHost;
+  let targetPath = originalPath;
+
+  // 2. 智能判断目标 Host
+  // Heuristic: If the first path segment looks like a hostname (contains a dot), treat it as the target host.
+  // This handles initial requests like /www.google.com/search.
+  if (pathSegments[0] && pathSegments[0].includes('.')) {
+    targetHost = pathSegments[0];
+    targetPath = pathSegments.slice(1).join('/');
+  } else {
+    // This is likely a relative path asset request (e.g., /assets/style.css).
+    // We need to infer the host from the Referer header.
+    const referer = request.headers.get('Referer');
+    if (referer) {
+      try {
+        const refererUrl = new URL(referer);
+        const refererPathSegments = refererUrl.pathname.split('/').filter(Boolean);
+        
+        // Find the first segment in the referer's path that looks like a hostname.
+        const hostFromReferer = refererPathSegments.find(segment => segment.includes('.'));
+
+        if (hostFromReferer) {
+          targetHost = hostFromReferer;
+          // The original path is the full path for the asset.
+          targetPath = originalPath;
+        }
+      } catch (e) {
+        // Invalid Referer URL, proceed with caution.
+      }
+    }
+  }
+
+  // If we couldn't determine a host, we can't proceed.
+  if (!targetHost) {
+    return new Response('Could not determine target host.', { status: 400 });
+  }
+
+  // Reconstruct the final target URL
+  // Note: We ensure there's exactly one slash between host and path.
+  const url = `https://${targetHost}/${targetPath}`.replace(/([^:]\/)\/+/g, "$1") + search;
 
   // 3. 构造请求头
   const newHeaders = new Headers(request.headers);
-
-  // 移除 Cloudflare 特定的请求头，防止被目标网站拦截
   newHeaders.forEach((value, key) => {
     if (key.startsWith('cf-')) {
       newHeaders.delete(key);
     }
   });
-
-  newHeaders.set('Host', new URL(url).hostname);
-  newHeaders.set('Referer', url);
+  newHeaders.set('Host', targetHost);
+  newHeaders.set('Referer', `https://${targetHost}/`); // Set a generic referer
 
   // 4. 创建请求
   const newRequest = new Request(url, {
     method: request.method,
     headers: newHeaders,
     body: request.body,
-    redirect: 'follow', // 自动跟随301/302重定向
+    redirect: 'follow',
   });
 
   // 5. 发起请求并获取响应
